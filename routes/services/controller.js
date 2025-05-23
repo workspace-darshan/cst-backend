@@ -1,6 +1,6 @@
 const Service = require("./model");
 const fs = require("fs");
-const { normalizeImagePath } = require("../../services/utils");
+const { normalizeImagePath, cleanImagePath, deleteUploadedFile, parseJSON } = require("../../services/utils");
 
 // Create a new service (Admin only)
 exports.createServices = async (req, res) => {
@@ -72,34 +72,61 @@ exports.updateService = async (req, res) => {
         }
 
         // Parse sections if it's sent as a string
-        const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
-
-        const service = await Service.findById(serviceId);
+        const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections; const service = await Service.findById(serviceId);
         if (!service) {
             return res.status(404).json({ message: "Service not found" });
+        }        // Handle Images (existing + newly uploaded)
+        let retainedImages = [];
+        try {
+            const retained = req.body.images;
+            if (retained) {
+                retainedImages = parseJSON(retained, []);
+                // Clean and normalize the retained image paths
+                retainedImages = retainedImages
+                    .map(img => cleanImagePath(img))
+                    .filter(Boolean)
+                    .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
+            }
+        } catch (e) {
+            console.warn("Invalid images field:", e);
         }
 
-        // Handle new images
-        let images = service.images;
-        if (req.files && req.files.length > 0) {
-            // Delete old images
-            service.images.forEach(imagePath => {
-                const fullPath = imagePath.replace("/uploads/", "");
-                if (fs.existsSync(fullPath)) {
-                    fs.unlinkSync(fullPath);
+        // Add newly uploaded images
+        const newImages = (req.files || [])
+            .map(f => normalizeImagePath(f.path))
+            .map(cleanImagePath)
+            .filter(Boolean);
+
+        // Combine retained and new images
+        const updatedImages = [...retainedImages, ...newImages];
+
+        // Find images to delete (existing images not in retained list)
+        const existingImagePaths = service.images
+            .map(img => cleanImagePath(img))
+            .filter(Boolean)
+            .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
+
+        const retainedImagePaths = new Set(retainedImages);
+
+        const imagesToDelete = existingImagePaths.filter(existingImg => !retainedImagePaths.has(existingImg));
+        for (const imageToDelete of imagesToDelete) {
+            try {
+                const deleted = await deleteUploadedFile(imageToDelete);
+                if (deleted) {
+                    console.log(`Successfully deleted image: ${imageToDelete}`);
+                } else {
+                    console.warn(`Failed to delete image: ${imageToDelete}`);
                 }
-            });
-            // Add new images
-            images = req.files.map(file => normalizeImagePath(file.path));
-        }
-
-        const updatedService = await Service.findByIdAndUpdate(
+            } catch (error) {
+                console.error(`Error deleting image ${imageToDelete}:`, error);
+            }
+        } const updatedService = await Service.findByIdAndUpdate(
             serviceId,
             {
                 title,
                 description,
                 sections: parsedSections,
-                images,
+                images: updatedImages,
             },
             { new: true }
         );
@@ -116,18 +143,27 @@ exports.deleteService = async (req, res) => {
         const service = await Service.findById(req.params.id);
         if (!service) {
             return res.status(404).json({ message: "Service not found" });
+        }        // Delete associated images
+        const deletionResults = [];
+        for (const image of service.images) {
+            if (image) {
+                const cleanedPath = cleanImagePath(image);
+                if (cleanedPath) {
+                    const deleted = await deleteUploadedFile(cleanedPath);
+                    deletionResults.push({
+                        image,
+                        path: cleanedPath,
+                        deleted
+                    });
+                }
+            }
         }
 
-        // Delete associated images
-        service.images.forEach(imagePath => {
-            const fullPath = imagePath.replace("/uploads/", "");
-            if (fs.existsSync(fullPath)) {
-                fs.unlinkSync(fullPath);
-            }
-        });
-
         await Service.findByIdAndDelete(req.params.id);
-        res.json({ message: "Service deleted successfully" });
+        res.json({
+            message: "Service deleted successfully",
+            deletedImages: deletionResults
+        });
     } catch (error) {
         res.status(500).json({ message: "Error deleting service", error: error.message });
     }

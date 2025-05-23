@@ -1,5 +1,4 @@
 const mongoose = require("mongoose");
-const { normalizeImagePath } = require("../../services/utils");
 
 const projectSchema = new mongoose.Schema(
     {

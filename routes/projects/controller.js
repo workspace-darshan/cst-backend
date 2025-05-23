@@ -1,4 +1,4 @@
-const { handleError, handleSuccess, normalizeImagePath, parseJSON, deleteUploadedFile, extractRelativeFilePath } = require("../../services/utils");
+const { handleError, handleSuccess, normalizeImagePath, parseJSON, cleanImagePath, deleteUploadedFile } = require("../../services/utils");
 const ProjectModel = require("./model");
 
 // Create a new project
@@ -56,6 +56,14 @@ exports.updateProject = async (req, res) => {
     try {
         const { client, projectTitle, description } = req.body;
 
+        // Check if projectTitle with same title already exists (excluding current projectTitle)
+        const existingProjectName = await Service.findOne({
+            projectTitle,
+            _id: { $ne: req.params.id }
+        });
+        if (existingProjectName) {
+            return res.status(400).json({ message: "Project with this title already exists" });
+        }
         // Get existing project to compare images
         const existingProject = await ProjectModel.findById(req.params.id);
         if (!existingProject) {
@@ -74,19 +82,46 @@ exports.updateProject = async (req, res) => {
             const retained = req.body.images;
             if (retained) {
                 retainedImages = parseJSON(retained, []);
+                // Clean and normalize the retained image paths
+                retainedImages = retainedImages
+                    .map(img => cleanImagePath(img))
+                    .filter(Boolean)
+                    .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
             }
         } catch (e) {
             console.warn("Invalid images field:", e);
         }
 
         // Add newly uploaded images
-        const newImages = (req.files || []).map(f => normalizeImagePath(f.path));
+        const newImages = (req.files || [])
+            .map(f => normalizeImagePath(f.path))
+            .map(cleanImagePath)
+            .filter(Boolean);
+
+        // Combine retained and new images
         const updatedImages = [...retainedImages, ...newImages];
 
-        // Delete images that are not in retained list
-        const imagesToDelete = existingProject.images.filter(img => !retainedImages.includes(img));
+        // Find images to delete (existing images not in retained list)
+        const existingImagePaths = existingProject.images
+            .map(img => cleanImagePath(img))
+            .filter(Boolean)
+            .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
+
+        const retainedImagePaths = new Set(retainedImages);
+
+        const imagesToDelete = existingImagePaths.filter(existingImg => !retainedImagePaths.has(existingImg));
+
         for (const imageToDelete of imagesToDelete) {
-            await deleteUploadedFile(extractRelativeFilePath(imageToDelete));
+            try {
+                const deleted = await deleteUploadedFile(imageToDelete);
+                if (deleted) {
+                    console.log(`Successfully deleted image: ${imageToDelete}`);
+                } else {
+                    console.warn(`Failed to delete image: ${imageToDelete}`);
+                }
+            } catch (error) {
+                console.error(`Error deleting image ${imageToDelete}:`, error);
+            }
         }
 
         updateData.images = updatedImages;
@@ -106,24 +141,119 @@ exports.updateProject = async (req, res) => {
     }
 };
 
-// Delete project
 exports.deleteProject = async (req, res) => {
     try {
         const project = await ProjectModel.findById(req.params.id);
         if (!project) {
             return handleError(res, "Project not found", 404);
         }
+        const deletionResults = []; for (const image of project.images) {
+            if (image) {
+                const cleanedPath = cleanImagePath(image);
+                if (!cleanedPath) continue;
 
-        // Delete all associated images
-        for (const image of project.images) {
-            await deleteUploadedFile(extractRelativeFilePath(image));
+                // Ensure path starts with uploads/
+                const fullPath = cleanedPath.startsWith('uploads/') ? cleanedPath : `uploads/${cleanedPath}`;
+
+                try {
+                    const deleted = await deleteUploadedFile(fullPath);
+                    deletionResults.push({
+                        image: image,
+                        path: fullPath,
+                        deleted: deleted
+                    });
+
+                    if (deleted) {
+                        console.log(`Successfully deleted image: ${fullPath}`);
+                    } else {
+                        console.warn(`Failed to delete image: ${fullPath}`);
+                    }
+                } catch (error) {
+                    console.error(`Error deleting image ${fullPath}:`, error);
+                    deletionResults.push({
+                        image: image,
+                        path: fullPath,
+                        deleted: false,
+                        error: error.message
+                    });
+                }
+            }
         }
 
-        // Delete the project
+        // Delete the project from database
         await ProjectModel.findByIdAndDelete(req.params.id);
-        return handleSuccess(res, project, "Project deleted successfully");
+
+        return handleSuccess(res, {
+            project: project,
+            deletedImages: deletionResults
+        }, "Project deleted successfully");
     } catch (err) {
-        console.error(err);
+        console.error('Error in deleteProject:', err);
         return handleError(res, "Error deleting project", 500, err.message);
+    }
+};
+
+// Optional: Add a cleanup function to remove orphaned files
+exports.cleanupOrphanedImages = async (req, res) => {
+    try {
+        const fs = require('fs');
+        const path = require('path');
+
+        // Get all projects and their images
+        const projects = await ProjectModel.find({}, 'images');
+        const usedImages = new Set();
+
+        projects.forEach(project => {
+            project.images.forEach(image => {
+                if (image) {
+                    usedImages.add(cleanImagePath(image));
+                }
+            });
+        });
+
+        // Get all files in uploads/image directory
+        const imageDir = path.join('uploads', 'image');
+        const allFiles = [];
+
+        const scanDirectory = (dir, baseDir = '') => {
+            if (fs.existsSync(dir)) {
+                const files = fs.readdirSync(dir);
+                files.forEach(file => {
+                    const filePath = path.join(dir, file);
+                    const relativePath = path.join(baseDir, file);
+
+                    if (fs.statSync(filePath).isDirectory()) {
+                        scanDirectory(filePath, relativePath);
+                    } else {
+                        allFiles.push(path.join('image', relativePath).replace(/\\/g, '/'));
+                    }
+                });
+            }
+        };
+
+        scanDirectory(imageDir);
+
+        // Find orphaned files
+        const orphanedFiles = allFiles.filter(file => !usedImages.has(`uploads/${file}`));
+
+        // Delete orphaned files
+        const deletedFiles = [];
+        for (const orphanedFile of orphanedFiles) {
+            const deleted = await deleteUploadedFile(orphanedFile);
+            if (deleted) {
+                deletedFiles.push(orphanedFile);
+            }
+        }
+
+        return handleSuccess(res, {
+            totalFiles: allFiles.length,
+            usedFiles: usedImages.size,
+            orphanedFiles: orphanedFiles.length,
+            deletedFiles: deletedFiles
+        }, "Cleanup completed successfully");
+
+    } catch (err) {
+        console.error('Error in cleanupOrphanedImages:', err);
+        return handleError(res, "Error during cleanup", 500, err.message);
     }
 };
