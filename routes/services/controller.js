@@ -1,9 +1,9 @@
 const Service = require("./model");
-const fs = require("fs");
-const { normalizeImagePath, cleanImagePath, deleteUploadedFile, parseJSON } = require("../../services/utils");
+const { handleError, handleSuccess, normalizeImagePath, cleanImagePath, deleteUploadedFile, parseJSON } = require("../../services/utils");
 
 // Create a new service (Admin only)
 exports.createServices = async (req, res) => {
+    console.log("Creating service with body:", req.body);
     try {
         const { title, description, sections } = req.body;
 
@@ -26,10 +26,10 @@ exports.createServices = async (req, res) => {
         });
 
         await service.save();
-        res.status(201).json(service);
+        return handleSuccess(res, service, "service created successfully", 201);
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error creating service", error: error.message });
+        return handleError(res, "Error creating service", 500, err.message);
     }
 };
 
@@ -37,9 +37,9 @@ exports.createServices = async (req, res) => {
 exports.getAllServices = async (req, res) => {
     try {
         const services = await Service.find().sort({ createdAt: -1 });
-        res.json(services);
+        return handleSuccess(res, services, "services fetched successfully");
     } catch (error) {
-        res.status(500).json({ message: "Error fetching services", error: error.message });
+        return handleError(res, "Error fetching services", 500, err.message);
     }
 };
 
@@ -48,11 +48,11 @@ exports.getServiceById = async (req, res) => {
     try {
         const service = await Service.findById(req.params.id);
         if (!service) {
-            return res.status(404).json({ message: "Service not found" });
+            return handleError(res, "Service not found", 404);
         }
-        res.json(service);
+        return handleSuccess(res, service, "service fetched successfully");
     } catch (error) {
-        res.status(500).json({ message: "Error fetching service", error: error.message });
+        return handleError(res, "Error fetching service", 500, err.message);
     }
 };
 
@@ -68,14 +68,14 @@ exports.updateService = async (req, res) => {
             _id: { $ne: serviceId }
         });
         if (existingService) {
-            return res.status(400).json({ message: "Service with this title already exists" });
+            return handleError(res, "Service with this title already exists", 400);
         }
 
         // Parse sections if it's sent as a string
         const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections; const service = await Service.findById(serviceId);
         if (!service) {
-            return res.status(404).json({ message: "Service not found" });
-        }        // Handle Images (existing + newly uploaded)
+            return handleError(res, "Service not found", 404);
+        }
         let retainedImages = [];
         try {
             const retained = req.body.images;
@@ -130,10 +130,9 @@ exports.updateService = async (req, res) => {
             },
             { new: true }
         );
-
-        res.json(updatedService);
+        return handleSuccess(res, updatedService, "Services updated successfully");
     } catch (error) {
-        res.status(500).json({ message: "Error updating service", error: error.message });
+        return handleError(res, "Error updating Service", 500, err.message);
     }
 };
 
@@ -142,8 +141,8 @@ exports.deleteService = async (req, res) => {
     try {
         const service = await Service.findById(req.params.id);
         if (!service) {
-            return res.status(404).json({ message: "Service not found" });
-        }        // Delete associated images
+            return handleError(res, "Service not found", 404);
+        }
         const deletionResults = [];
         for (const image of service.images) {
             if (image) {
@@ -160,11 +159,10 @@ exports.deleteService = async (req, res) => {
         }
 
         await Service.findByIdAndDelete(req.params.id);
-        res.json({
-            message: "Service deleted successfully",
+        return handleSuccess(res, {
             deletedImages: deletionResults
-        });
+        }, "Service deleted successfully");
     } catch (error) {
-        res.status(500).json({ message: "Error deleting service", error: error.message });
+        return handleError(res, "Error deleting service", 500, err.message);
     }
 };

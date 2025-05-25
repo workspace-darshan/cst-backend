@@ -57,12 +57,12 @@ exports.updateProject = async (req, res) => {
         const { client, projectTitle, description } = req.body;
 
         // Check if projectTitle with same title already exists (excluding current projectTitle)
-        const existingProjectName = await Service.findOne({
+        const existingProjectName = await ProjectModel.findOne({
             projectTitle,
             _id: { $ne: req.params.id }
         });
         if (existingProjectName) {
-            return res.status(400).json({ message: "Project with this title already exists" });
+            return handleError(res, "Project with this title already exists", 400);
         }
         // Get existing project to compare images
         const existingProject = await ProjectModel.findById(req.params.id);
@@ -134,7 +134,8 @@ exports.updateProject = async (req, res) => {
 
         if (!project) {
             return handleError(res, "Project not found", 404);
-        } return handleSuccess(res, project, "Project updated successfully");
+        }
+        return handleSuccess(res, project, "Project updated successfully");
     } catch (err) {
         console.error(err);
         return handleError(res, "Error updating project", 500, err.message);
