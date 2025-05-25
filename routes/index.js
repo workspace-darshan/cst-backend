@@ -10,4 +10,7 @@ routes.use('/projects', projects.route);
 const services = require("./services");
 routes.use('/services', services.route);
 
+const common = require("./common");
+routes.use('/common', common.route);
+
 module.exports = routes;

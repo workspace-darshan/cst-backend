@@ -3,7 +3,6 @@ const { handleError, handleSuccess, normalizeImagePath, cleanImagePath, deleteUp
 
 // Create a new service (Admin only)
 exports.createServices = async (req, res) => {
-    console.log("Creating service with body:", req.body);
     try {
         const { title, description, sections } = req.body;
 

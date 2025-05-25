@@ -55,7 +55,6 @@ exports.getProjectById = async (req, res) => {
 exports.updateProject = async (req, res) => {
     try {
         const { client, projectTitle, description } = req.body;
-
         // Check if projectTitle with same title already exists (excluding current projectTitle)
         const existingProjectName = await ProjectModel.findOne({
             projectTitle,
@@ -100,7 +99,6 @@ exports.updateProject = async (req, res) => {
 
         // Combine retained and new images
         const updatedImages = [...retainedImages, ...newImages];
-
         // Find images to delete (existing images not in retained list)
         const existingImagePaths = existingProject.images
             .map(img => cleanImagePath(img))
@@ -125,7 +123,7 @@ exports.updateProject = async (req, res) => {
         }
 
         updateData.images = updatedImages;
-
+        // return;
         const project = await ProjectModel.findByIdAndUpdate(
             req.params.id,
             updateData,
