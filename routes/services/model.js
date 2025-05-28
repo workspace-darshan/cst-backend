@@ -1,5 +1,4 @@
 const mongoose = require("mongoose");
-const { normalizeImagePath } = require("../../services/utils");
 
 const serviceSchema = new mongoose.Schema(
     {
@@ -13,25 +12,20 @@ const serviceSchema = new mongoose.Schema(
             required: true,
         },
         sections: [{
-            subheading: {
+            heading: {
                 type: String,
                 required: true
             },
             description: {
                 type: String,
-                required: true
             },
             points: [{
-                description: {
-                    type: String,
-                    required: true
-                }
+                type: String,
             }],
-            _id: false
+            images: [{
+                type: String,
+            }]
         }],
-        images: [{
-            type: String,
-        }]
     },
     {
         timestamps: true,

@@ -15,20 +15,17 @@ exports.createServices = async (req, res) => {
         // Parse sections if it's sent as a string
         const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
 
-        const images = req.files ? req.files.map(file => normalizeImagePath(file.path)) : [];
-
         const service = new Service({
             title,
             description,
-            sections: parsedSections,
-            images
+            sections: parsedSections
         });
 
         await service.save();
         return handleSuccess(res, service, "service created successfully", 201);
     } catch (error) {
         console.error(error);
-        return handleError(res, "Error creating service", 500, err.message);
+        return handleError(res, "Error creating service", 500, error.message);
     }
 };
 
@@ -71,67 +68,61 @@ exports.updateService = async (req, res) => {
         }
 
         // Parse sections if it's sent as a string
-        const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections; const service = await Service.findById(serviceId);
+        const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
+
+        const service = await Service.findById(serviceId);
         if (!service) {
             return handleError(res, "Service not found", 404);
-        }
-        let retainedImages = [];
-        try {
-            const retained = req.body.images;
-            if (retained) {
-                retainedImages = parseJSON(retained, []);
-                // Clean and normalize the retained image paths
-                retainedImages = retainedImages
-                    .map(img => cleanImagePath(img))
-                    .filter(Boolean)
-                    .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
-            }
-        } catch (e) {
-            console.warn("Invalid images field:", e);
-        }
-
-        // Add newly uploaded images
-        const newImages = (req.files || [])
-            .map(f => normalizeImagePath(f.path))
-            .map(cleanImagePath)
-            .filter(Boolean);
-
-        // Combine retained and new images
-        const updatedImages = [...retainedImages, ...newImages];
-
-        // Find images to delete (existing images not in retained list)
-        const existingImagePaths = service.images
-            .map(img => cleanImagePath(img))
-            .filter(Boolean)
-            .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
-
-        const retainedImagePaths = new Set(retainedImages);
-
-        const imagesToDelete = existingImagePaths.filter(existingImg => !retainedImagePaths.has(existingImg));
-        for (const imageToDelete of imagesToDelete) {
-            try {
-                const deleted = await deleteUploadedFile(imageToDelete);
-                if (deleted) {
-                    console.log(`Successfully deleted image: ${imageToDelete}`);
-                } else {
-                    console.warn(`Failed to delete image: ${imageToDelete}`);
+        }        // We need to handle image deletion for each section that was updated
+        const serviceWithSections = await Service.findById(serviceId);
+        if (serviceWithSections && serviceWithSections.sections) {
+            for (const oldSection of serviceWithSections.sections) {
+                if (oldSection.images && oldSection.images.length > 0) {
+                    const updatedSection = parsedSections.find(s => s._id?.toString() === oldSection._id?.toString());
+                    if (!updatedSection) {
+                        // Section was removed, delete all its images
+                        for (const image of oldSection.images) {
+                            try {
+                                const cleanedPath = cleanImagePath(image);
+                                if (cleanedPath) {
+                                    await deleteUploadedFile(cleanedPath);
+                                }
+                            } catch (error) {
+                                console.error(`Error deleting image ${image}:`, error);
+                            }
+                        }
+                    } else {
+                        // Section exists, delete images that are not in the updated section
+                        const updatedImages = new Set(updatedSection.images || []);
+                        for (const image of oldSection.images) {
+                            if (!updatedImages.has(image)) {
+                                try {
+                                    const cleanedPath = cleanImagePath(image);
+                                    if (cleanedPath) {
+                                        await deleteUploadedFile(cleanedPath);
+                                    }
+                                } catch (error) {
+                                    console.error(`Error deleting image ${image}:`, error);
+                                }
+                            }
+                        }
+                    }
                 }
-            } catch (error) {
-                console.error(`Error deleting image ${imageToDelete}:`, error);
             }
-        } const updatedService = await Service.findByIdAndUpdate(
+        }
+
+        const updatedService = await Service.findByIdAndUpdate(
             serviceId,
             {
                 title,
                 description,
                 sections: parsedSections,
-                images: updatedImages,
             },
             { new: true }
         );
-        return handleSuccess(res, updatedService, "Services updated successfully");
+        return handleSuccess(res, updatedService, "Service updated successfully");
     } catch (error) {
-        return handleError(res, "Error updating Service", 500, err.message);
+        return handleError(res, "Error updating Service", 500, error.message);
     }
 };
 
@@ -142,17 +133,23 @@ exports.deleteService = async (req, res) => {
         if (!service) {
             return handleError(res, "Service not found", 404);
         }
+
         const deletionResults = [];
-        for (const image of service.images) {
-            if (image) {
-                const cleanedPath = cleanImagePath(image);
-                if (cleanedPath) {
-                    const deleted = await deleteUploadedFile(cleanedPath);
-                    deletionResults.push({
-                        image,
-                        path: cleanedPath,
-                        deleted
-                    });
+        // Delete images from each section
+        for (const section of service.sections) {
+            if (section.images && section.images.length > 0) {
+                for (const image of section.images) {
+                    if (image) {
+                        const cleanedPath = cleanImagePath(image);
+                        if (cleanedPath) {
+                            const deleted = await deleteUploadedFile(cleanedPath);
+                            deletionResults.push({
+                                image,
+                                path: cleanedPath,
+                                deleted
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -162,6 +159,6 @@ exports.deleteService = async (req, res) => {
             deletedImages: deletionResults
         }, "Service deleted successfully");
     } catch (error) {
-        return handleError(res, "Error deleting service", 500, err.message);
+        return handleError(res, "Error deleting service", 500, error.message);
     }
 };
