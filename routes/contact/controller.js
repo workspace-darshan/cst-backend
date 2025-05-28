@@ -3,6 +3,7 @@ const { handleSuccess, handleError } = require("../../services/utils");
 const Contact = require("./model");
 
 const createContact = async (req, res) => {
+    console.log("🚀 ~ :3 ~ createContact ~ req.body:", req.body);
     try {
         const { firstName, lastName, phone, email, organizationName, message } = req.body;
         console.log("🚀 ~ :9 ~ email:", email)
