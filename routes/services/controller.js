@@ -77,10 +77,23 @@ exports.updateService = async (req, res) => {
         const serviceWithSections = await Service.findById(serviceId);
         if (serviceWithSections && serviceWithSections.sections) {
             for (const oldSection of serviceWithSections.sections) {
-                if (oldSection.images && oldSection.images.length > 0) {
-                    const updatedSection = parsedSections.find(s => s._id?.toString() === oldSection._id?.toString());
-                    if (!updatedSection) {
-                        // Section was removed, delete all its images
+                const updatedSection = parsedSections.find(s => s._id?.toString() === oldSection._id?.toString());
+
+                // Handle section deletion
+                if (!updatedSection) {
+                    // Section was removed, delete all its images and poster
+                    if (oldSection.posterImg) {
+                        try {
+                            const cleanedPath = cleanImagePath(oldSection.posterImg);
+                            if (cleanedPath) {
+                                await deleteUploadedFile(cleanedPath);
+                            }
+                        } catch (error) {
+                            console.error(`Error deleting poster image ${oldSection.posterImg}:`, error);
+                        }
+                    }
+
+                    if (oldSection.images && oldSection.images.length > 0) {
                         for (const image of oldSection.images) {
                             try {
                                 const cleanedPath = cleanImagePath(image);
@@ -91,8 +104,22 @@ exports.updateService = async (req, res) => {
                                 console.error(`Error deleting image ${image}:`, error);
                             }
                         }
-                    } else {
-                        // Section exists, delete images that are not in the updated section
+                    }
+                } else {
+                    // Handle poster image changes
+                    if (oldSection.posterImg && oldSection.posterImg !== updatedSection.posterImg) {
+                        try {
+                            const cleanedPath = cleanImagePath(oldSection.posterImg);
+                            if (cleanedPath) {
+                                await deleteUploadedFile(cleanedPath);
+                            }
+                        } catch (error) {
+                            console.error(`Error deleting old poster image ${oldSection.posterImg}:`, error);
+                        }
+                    }
+
+                    // Handle gallery images changes
+                    if (oldSection.images && oldSection.images.length > 0) {
                         const updatedImages = new Set(updatedSection.images || []);
                         for (const image of oldSection.images) {
                             if (!updatedImages.has(image)) {
@@ -132,11 +159,24 @@ exports.deleteService = async (req, res) => {
         const service = await Service.findById(req.params.id);
         if (!service) {
             return handleError(res, "Service not found", 404);
-        }
-
-        const deletionResults = [];
+        } const deletionResults = [];
         // Delete images from each section
         for (const section of service.sections) {
+            // Delete poster image if exists
+            if (section.posterImg) {
+                const cleanedPath = cleanImagePath(section.posterImg);
+                if (cleanedPath) {
+                    const deleted = await deleteUploadedFile(cleanedPath);
+                    deletionResults.push({
+                        image: section.posterImg,
+                        path: cleanedPath,
+                        deleted,
+                        type: 'poster'
+                    });
+                }
+            }
+
+            // Delete gallery images if they exist
             if (section.images && section.images.length > 0) {
                 for (const image of section.images) {
                     if (image) {
@@ -146,7 +186,8 @@ exports.deleteService = async (req, res) => {
                             deletionResults.push({
                                 image,
                                 path: cleanedPath,
-                                deleted
+                                deleted,
+                                type: 'gallery'
                             });
                         }
                     }

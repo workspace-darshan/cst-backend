@@ -6,15 +6,16 @@ exports.createProject = async (req, res) => {
     try {
         const { client, projectTitle, description } = req.body;
 
-        const images = (req.files || [])
-            .filter(f => f.path)
-            .map(f => normalizeImagePath(f.path));
+        const files = req.files || [];
+        const posterFile = files.find(f => f.fieldname === 'posterImg');
+        const imageFiles = files.filter(f => f.fieldname === 'images');
 
         const project = new ProjectModel({
             client,
             projectTitle,
             description,
-            images
+            posterImg: posterFile ? normalizeImagePath(posterFile.path) : undefined,
+            images: imageFiles.filter(f => f.path).map(f => normalizeImagePath(f.path))
         });
 
         await project.save();
@@ -75,13 +76,48 @@ exports.updateProject = async (req, res) => {
             description
         };
 
-        // Handle Images (existing + newly uploaded)
+        // Handle poster image
+        const files = req.files || [];
+        const posterFile = files.find(f => f.fieldname === 'posterImg');
+        const retainedPoster = req.body.posterImg;
+
+        // If there's a new poster file, use it
+        if (posterFile) {
+            updateData.posterImg = normalizeImagePath(posterFile.path);
+            // Delete old poster if it exists
+            if (existingProject.posterImg) {
+                try {
+                    const cleanedPath = cleanImagePath(existingProject.posterImg);
+                    if (cleanedPath) {
+                        await deleteUploadedFile(cleanedPath);
+                    }
+                } catch (error) {
+                    console.error(`Error deleting old poster image: ${error}`);
+                }
+            }
+        }
+        // If poster is explicitly set in the body, use it
+        else if (retainedPoster !== undefined) {
+            // If retainedPoster is empty/null and there was an old poster, delete the old one
+            if (!retainedPoster && existingProject.posterImg) {
+                try {
+                    const cleanedPath = cleanImagePath(existingProject.posterImg);
+                    if (cleanedPath) {
+                        await deleteUploadedFile(cleanedPath);
+                    }
+                } catch (error) {
+                    console.error(`Error deleting old poster image: ${error}`);
+                }
+            }
+            updateData.posterImg = retainedPoster || null;
+        }
+
+        // Handle gallery Images (existing + newly uploaded)
         let retainedImages = [];
         try {
             const retained = req.body.images;
             if (retained) {
                 retainedImages = parseJSON(retained, []);
-                // Clean and normalize the retained image paths
                 retainedImages = retainedImages
                     .map(img => cleanImagePath(img))
                     .filter(Boolean)
@@ -92,13 +128,15 @@ exports.updateProject = async (req, res) => {
         }
 
         // Add newly uploaded images
-        const newImages = (req.files || [])
+        const newImages = files
+            .filter(f => f.fieldname === 'images')
             .map(f => normalizeImagePath(f.path))
             .map(cleanImagePath)
             .filter(Boolean);
 
         // Combine retained and new images
         const updatedImages = [...retainedImages, ...newImages];
+
         // Find images to delete (existing images not in retained list)
         const existingImagePaths = existingProject.images
             .map(img => cleanImagePath(img))
@@ -123,7 +161,7 @@ exports.updateProject = async (req, res) => {
         }
 
         updateData.images = updatedImages;
-        // return;
+
         const project = await ProjectModel.findByIdAndUpdate(
             req.params.id,
             updateData,
@@ -146,12 +184,46 @@ exports.deleteProject = async (req, res) => {
         if (!project) {
             return handleError(res, "Project not found", 404);
         }
-        const deletionResults = []; for (const image of project.images) {
+        const deletionResults = [];
+
+        // Delete poster image if exists
+        if (project.posterImg) {
+            const cleanedPosterPath = cleanImagePath(project.posterImg);
+            if (cleanedPosterPath) {
+                const fullPosterPath = cleanedPosterPath.startsWith('uploads/') ? cleanedPosterPath : `uploads/${cleanedPosterPath}`;
+                try {
+                    const deleted = await deleteUploadedFile(fullPosterPath);
+                    deletionResults.push({
+                        image: project.posterImg,
+                        path: fullPosterPath,
+                        deleted: deleted,
+                        type: 'poster'
+                    });
+
+                    if (deleted) {
+                        console.log(`Successfully deleted poster image: ${fullPosterPath}`);
+                    } else {
+                        console.warn(`Failed to delete poster image: ${fullPosterPath}`);
+                    }
+                } catch (error) {
+                    console.error(`Error deleting poster image ${fullPosterPath}:`, error);
+                    deletionResults.push({
+                        image: project.posterImg,
+                        path: fullPosterPath,
+                        deleted: false,
+                        error: error.message,
+                        type: 'poster'
+                    });
+                }
+            }
+        }
+
+        // Delete gallery images
+        for (const image of project.images) {
             if (image) {
                 const cleanedPath = cleanImagePath(image);
                 if (!cleanedPath) continue;
 
-                // Ensure path starts with uploads/
                 const fullPath = cleanedPath.startsWith('uploads/') ? cleanedPath : `uploads/${cleanedPath}`;
 
                 try {
@@ -159,21 +231,23 @@ exports.deleteProject = async (req, res) => {
                     deletionResults.push({
                         image: image,
                         path: fullPath,
-                        deleted: deleted
+                        deleted: deleted,
+                        type: 'gallery'
                     });
 
                     if (deleted) {
-                        console.log(`Successfully deleted image: ${fullPath}`);
+                        console.log(`Successfully deleted gallery image: ${fullPath}`);
                     } else {
-                        console.warn(`Failed to delete image: ${fullPath}`);
+                        console.warn(`Failed to delete gallery image: ${fullPath}`);
                     }
                 } catch (error) {
-                    console.error(`Error deleting image ${fullPath}:`, error);
+                    console.error(`Error deleting gallery image ${fullPath}:`, error);
                     deletionResults.push({
                         image: image,
                         path: fullPath,
                         deleted: false,
-                        error: error.message
+                        error: error.message,
+                        type: 'gallery'
                     });
                 }
             }
@@ -199,10 +273,15 @@ exports.cleanupOrphanedImages = async (req, res) => {
         const path = require('path');
 
         // Get all projects and their images
-        const projects = await ProjectModel.find({}, 'images');
+        const projects = await ProjectModel.find({}, 'images posterImg');
         const usedImages = new Set();
 
         projects.forEach(project => {
+            // Add poster image if exists
+            if (project.posterImg) {
+                usedImages.add(cleanImagePath(project.posterImg));
+            }
+            // Add gallery images
             project.images.forEach(image => {
                 if (image) {
                     usedImages.add(cleanImagePath(image));

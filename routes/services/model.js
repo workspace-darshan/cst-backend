@@ -22,6 +22,9 @@ const serviceSchema = new mongoose.Schema(
             points: [{
                 type: String,
             }],
+            posterImg: {
+                type: String,
+            },
             images: [{
                 type: String,
             }]
