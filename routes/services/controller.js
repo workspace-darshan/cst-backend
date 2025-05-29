@@ -13,13 +13,44 @@ exports.createServices = async (req, res) => {
         }
 
         // Parse sections if it's sent as a string
-        const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
-
-        const service = new Service({
+        let parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
+        let serviceData = {
             title,
             description,
             sections: parsedSections
-        });
+        };
+
+        // Process uploaded files and map them to sections
+        if (req.files && req.files.length > 0) {
+            // Group files by fieldname
+            const filesByField = {};
+            req.files.forEach(file => {
+                if (!filesByField[file.fieldname]) {
+                    filesByField[file.fieldname] = [];
+                }
+                filesByField[file.fieldname].push(normalizeImagePath(file.path));
+            });
+
+            // Handle main posterImg
+            if (filesByField['posterImg'] && filesByField['posterImg'].length > 0) {
+                serviceData.posterImg = filesByField['posterImg'][0];
+            }
+
+            // Map files to sections
+            serviceData.sections = parsedSections.map((section, sectionIndex) => {
+                const updatedSection = { ...section };
+
+                // Handle section images
+                const imagesFieldName = `sections[${sectionIndex}].images`;
+                if (filesByField[imagesFieldName] && filesByField[imagesFieldName].length > 0) {
+                    updatedSection.images = filesByField[imagesFieldName];
+                }
+
+                return updatedSection;
+            });
+        }
+
+        const service = new Service(serviceData);
 
         await service.save();
         return handleSuccess(res, service, "service created successfully", 201);
@@ -68,30 +99,64 @@ exports.updateService = async (req, res) => {
         }
 
         // Parse sections if it's sent as a string
-        const parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
+        let parsedSections = typeof sections === 'string' ? JSON.parse(sections) : sections;
 
         const service = await Service.findById(serviceId);
         if (!service) {
             return handleError(res, "Service not found", 404);
-        }        // We need to handle image deletion for each section that was updated
+        }
+
+        // Process uploaded files and map them to sections
+        if (req.files && req.files.length > 0) {
+            // Group files by fieldname
+            const filesByField = {};
+            req.files.forEach(file => {
+                if (!filesByField[file.fieldname]) {
+                    filesByField[file.fieldname] = [];
+                }
+                filesByField[file.fieldname].push(normalizeImagePath(file.path));
+            });            // Handle main posterImg
+            if (filesByField['posterImg'] && filesByField['posterImg'].length > 0) {
+                // If there's an existing poster image, it will be handled in the image deletion section below
+                service.posterImg = filesByField['posterImg'][0];
+            }
+
+            // Map files to sections
+            parsedSections = parsedSections.map((section, sectionIndex) => {
+                const updatedSection = { ...section };
+
+                // Handle section images - merge with existing if any
+                const imagesFieldName = `sections[${sectionIndex}].images`;
+                if (filesByField[imagesFieldName] && filesByField[imagesFieldName].length > 0) {
+                    // If section already has images, append new ones, otherwise use new ones
+                    const existingImages = updatedSection.images || [];
+                    updatedSection.images = [...existingImages, ...filesByField[imagesFieldName]];
+                }
+
+                return updatedSection;
+            });
+        }        // Handle image deletion for sections that were updated
         const serviceWithSections = await Service.findById(serviceId);
-        if (serviceWithSections && serviceWithSections.sections) {
+        if (serviceWithSections) {
+            // Handle main poster image deletion if changed
+            if (serviceWithSections.posterImg && serviceWithSections.posterImg !== service.posterImg) {
+                try {
+                    const cleanedPath = cleanImagePath(serviceWithSections.posterImg);
+                    if (cleanedPath) {
+                        await deleteUploadedFile(cleanedPath);
+                    }
+                } catch (error) {
+                    console.error(`Error deleting main poster image ${serviceWithSections.posterImg}:`, error);
+                }
+            }
+
+            // Handle sections
             for (const oldSection of serviceWithSections.sections) {
                 const updatedSection = parsedSections.find(s => s._id?.toString() === oldSection._id?.toString());
 
                 // Handle section deletion
                 if (!updatedSection) {
-                    // Section was removed, delete all its images and poster
-                    if (oldSection.posterImg) {
-                        try {
-                            const cleanedPath = cleanImagePath(oldSection.posterImg);
-                            if (cleanedPath) {
-                                await deleteUploadedFile(cleanedPath);
-                            }
-                        } catch (error) {
-                            console.error(`Error deleting poster image ${oldSection.posterImg}:`, error);
-                        }
-                    }
+                    // Section was removed, delete all its images
 
                     if (oldSection.images && oldSection.images.length > 0) {
                         for (const image of oldSection.images) {
@@ -160,21 +225,23 @@ exports.deleteService = async (req, res) => {
         if (!service) {
             return handleError(res, "Service not found", 404);
         } const deletionResults = [];
+
+        // Delete main poster image if exists
+        if (service.posterImg) {
+            const cleanedPath = cleanImagePath(service.posterImg);
+            if (cleanedPath) {
+                const deleted = await deleteUploadedFile(cleanedPath);
+                deletionResults.push({
+                    image: service.posterImg,
+                    path: cleanedPath,
+                    deleted,
+                    type: 'main-poster'
+                });
+            }
+        }
+
         // Delete images from each section
         for (const section of service.sections) {
-            // Delete poster image if exists
-            if (section.posterImg) {
-                const cleanedPath = cleanImagePath(section.posterImg);
-                if (cleanedPath) {
-                    const deleted = await deleteUploadedFile(cleanedPath);
-                    deletionResults.push({
-                        image: section.posterImg,
-                        path: cleanedPath,
-                        deleted,
-                        type: 'poster'
-                    });
-                }
-            }
 
             // Delete gallery images if they exist
             if (section.images && section.images.length > 0) {

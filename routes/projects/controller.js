@@ -17,7 +17,6 @@ exports.createProject = async (req, res) => {
             posterImg: posterFile ? normalizeImagePath(posterFile.path) : undefined,
             images: imageFiles.filter(f => f.path).map(f => normalizeImagePath(f.path))
         });
-
         await project.save();
         return handleSuccess(res, project, "Project created successfully", 201);
     } catch (err) {

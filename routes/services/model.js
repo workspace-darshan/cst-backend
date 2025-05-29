@@ -11,6 +11,9 @@ const serviceSchema = new mongoose.Schema(
             type: String,
             required: true,
         },
+        posterImg: {
+            type: String,
+        },
         sections: [{
             heading: {
                 type: String,
@@ -22,9 +25,6 @@ const serviceSchema = new mongoose.Schema(
             points: [{
                 type: String,
             }],
-            posterImg: {
-                type: String,
-            },
             images: [{
                 type: String,
             }]
