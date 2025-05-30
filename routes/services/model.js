@@ -22,8 +22,13 @@ const serviceSchema = new mongoose.Schema(
             description: {
                 type: String,
             },
-            points: [{
-                type: String,
+            pointsSection: [{
+                heading: {
+                    type: String,
+                },
+                points: [{
+                    type: String,
+                }]
             }],
             images: [{
                 type: String,
