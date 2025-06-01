@@ -37,7 +37,6 @@ Inquiry from ${data?.firstName ? data.firstName + ' ' + (data?.lastName || '') :
       priority: "high",
       html: htmlContent,
     });
-    console.log(`Email sent: ${info.messageId}`);
     return info;
   } catch (err) {
     console.error("Error sending email:", err);

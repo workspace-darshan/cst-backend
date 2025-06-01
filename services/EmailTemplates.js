@@ -65,7 +65,6 @@ const getEmailTemplate = (templateName, data) => {
 
   // Select template based on name
   let content = "";
-  console.log("🚀 ~ getEmailTemplate ~ data:", data);
 
   switch (templateName) {
     case "contact":

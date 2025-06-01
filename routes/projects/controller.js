@@ -1,7 +1,6 @@
 const { handleError, handleSuccess, normalizeImagePath, parseJSON, cleanImagePath, deleteUploadedFile } = require("../../services/utils");
 const ProjectModel = require("./model");
 
-// Create a new project
 exports.createProject = async (req, res) => {
     try {
         const { client, projectTitle, description } = req.body;
@@ -14,9 +13,10 @@ exports.createProject = async (req, res) => {
             client,
             projectTitle,
             description,
-            posterImg: posterFile ? normalizeImagePath(posterFile.path) : undefined,
-            images: imageFiles.filter(f => f.path).map(f => normalizeImagePath(f.path))
+            posterImg: posterFile ? posterFile.path : undefined, // Cloudinary URL
+            images: imageFiles.filter(f => f.path).map(f => f.path) // Cloudinary URLs
         });
+
         await project.save();
         return handleSuccess(res, project, "Project created successfully", 201);
     } catch (err) {
@@ -55,18 +55,23 @@ exports.getProjectById = async (req, res) => {
 exports.updateProject = async (req, res) => {
     try {
         const { client, projectTitle, description } = req.body;
-        // Check if projectTitle with same title already exists (excluding current projectTitle)
-        const existingProjectName = await ProjectModel.findOne({
-            projectTitle,
-            _id: { $ne: req.params.id }
-        });
-        if (existingProjectName) {
-            return handleError(res, "Project with this title already exists", 400);
-        }
-        // Get existing project to compare images
+
+        // Get existing project first
         const existingProject = await ProjectModel.findById(req.params.id);
         if (!existingProject) {
             return handleError(res, "Project not found", 404);
+        }
+
+        // Only check for duplicate title if the title is actually changing
+        if (projectTitle && projectTitle !== existingProject.projectTitle) {
+            const existingProjectName = await ProjectModel.findOne({
+                projectTitle: { $regex: new RegExp(`^${projectTitle.trim()}$`, 'i') }, // Case-insensitive exact match
+                _id: { $ne: req.params.id }
+            });
+
+            if (existingProjectName) {
+                return handleError(res, "Project with this title already exists", 400);
+            }
         }
 
         const updateData = {
@@ -82,13 +87,16 @@ exports.updateProject = async (req, res) => {
 
         // If there's a new poster file, use it
         if (posterFile) {
-            updateData.posterImg = normalizeImagePath(posterFile.path);
-            // Delete old poster if it exists
+            updateData.posterImg = posterFile.path; // Cloudinary URL
+
+            // Delete old poster from Cloudinary if it exists
             if (existingProject.posterImg) {
                 try {
-                    const cleanedPath = cleanImagePath(existingProject.posterImg);
-                    if (cleanedPath) {
-                        await deleteUploadedFile(cleanedPath);
+                    const deleted = await deleteCloudinaryImage(existingProject.posterImg);
+                    if (deleted) {
+                        console.log(`Successfully deleted old poster from Cloudinary`);
+                    } else {
+                        console.warn(`Failed to delete old poster from Cloudinary`);
                     }
                 } catch (error) {
                     console.error(`Error deleting old poster image: ${error}`);
@@ -100,15 +108,19 @@ exports.updateProject = async (req, res) => {
             // If retainedPoster is empty/null and there was an old poster, delete the old one
             if (!retainedPoster && existingProject.posterImg) {
                 try {
-                    const cleanedPath = cleanImagePath(existingProject.posterImg);
-                    if (cleanedPath) {
-                        await deleteUploadedFile(cleanedPath);
+                    const deleted = await deleteCloudinaryImage(existingProject.posterImg);
+                    if (deleted) {
+                        console.log(`Successfully deleted old poster from Cloudinary`);
                     }
                 } catch (error) {
                     console.error(`Error deleting old poster image: ${error}`);
                 }
             }
             updateData.posterImg = retainedPoster || null;
+        }
+        // If no new poster file and retainedPoster is undefined, keep existing poster
+        else {
+            updateData.posterImg = existingProject.posterImg;
         }
 
         // Handle gallery Images (existing + newly uploaded)
@@ -117,50 +129,37 @@ exports.updateProject = async (req, res) => {
             const retained = req.body.images;
             if (retained) {
                 retainedImages = parseJSON(retained, []);
-                retainedImages = retainedImages
-                    .map(img => cleanImagePath(img))
-                    .filter(Boolean)
-                    .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
+                // For Cloudinary, we store full URLs, so no need to clean paths
+                retainedImages = retainedImages.filter(Boolean);
             }
         } catch (e) {
             console.warn("Invalid images field:", e);
         }
 
-        // Add newly uploaded images
+        // Add newly uploaded images (Cloudinary URLs)
         const newImages = files
             .filter(f => f.fieldname === 'images')
-            .map(f => normalizeImagePath(f.path))
-            .map(cleanImagePath)
+            .map(f => f.path)
             .filter(Boolean);
 
-        // Combine retained and new images
         const updatedImages = [...retainedImages, ...newImages];
-
-        // Find images to delete (existing images not in retained list)
-        const existingImagePaths = existingProject.images
-            .map(img => cleanImagePath(img))
-            .filter(Boolean)
-            .map(img => img.startsWith('uploads/') ? img : `uploads/${img}`);
-
-        const retainedImagePaths = new Set(retainedImages);
-
-        const imagesToDelete = existingImagePaths.filter(existingImg => !retainedImagePaths.has(existingImg));
-
+        const retainedImageSet = new Set(retainedImages);
+        const imagesToDelete = existingProject.images.filter(existingImg =>
+            existingImg && !retainedImageSet.has(existingImg)
+        );
         for (const imageToDelete of imagesToDelete) {
             try {
-                const deleted = await deleteUploadedFile(imageToDelete);
+                const deleted = await deleteCloudinaryImage(imageToDelete);
                 if (deleted) {
-                    console.log(`Successfully deleted image: ${imageToDelete}`);
+                    console.log(`Successfully deleted image from Cloudinary: ${imageToDelete}`);
                 } else {
-                    console.warn(`Failed to delete image: ${imageToDelete}`);
+                    console.warn(`Failed to delete image from Cloudinary: ${imageToDelete}`);
                 }
             } catch (error) {
                 console.error(`Error deleting image ${imageToDelete}:`, error);
             }
         }
-
         updateData.images = updatedImages;
-
         const project = await ProjectModel.findByIdAndUpdate(
             req.params.id,
             updateData,
@@ -170,9 +169,10 @@ exports.updateProject = async (req, res) => {
         if (!project) {
             return handleError(res, "Project not found", 404);
         }
+
         return handleSuccess(res, project, "Project updated successfully");
     } catch (err) {
-        console.error(err);
+        console.error('Update project error:', err);
         return handleError(res, "Error updating project", 500, err.message);
     }
 };
@@ -183,67 +183,55 @@ exports.deleteProject = async (req, res) => {
         if (!project) {
             return handleError(res, "Project not found", 404);
         }
+
         const deletionResults = [];
 
-        // Delete poster image if exists
+        // Delete poster image from Cloudinary if exists
         if (project.posterImg) {
-            const cleanedPosterPath = cleanImagePath(project.posterImg);
-            if (cleanedPosterPath) {
-                const fullPosterPath = cleanedPosterPath.startsWith('uploads/') ? cleanedPosterPath : `uploads/${cleanedPosterPath}`;
-                try {
-                    const deleted = await deleteUploadedFile(fullPosterPath);
-                    deletionResults.push({
-                        image: project.posterImg,
-                        path: fullPosterPath,
-                        deleted: deleted,
-                        type: 'poster'
-                    });
+            try {
+                const deleted = await deleteCloudinaryImage(project.posterImg);
+                deletionResults.push({
+                    image: project.posterImg,
+                    deleted: deleted,
+                    type: 'poster'
+                });
 
-                    if (deleted) {
-                        console.log(`Successfully deleted poster image: ${fullPosterPath}`);
-                    } else {
-                        console.warn(`Failed to delete poster image: ${fullPosterPath}`);
-                    }
-                } catch (error) {
-                    console.error(`Error deleting poster image ${fullPosterPath}:`, error);
-                    deletionResults.push({
-                        image: project.posterImg,
-                        path: fullPosterPath,
-                        deleted: false,
-                        error: error.message,
-                        type: 'poster'
-                    });
+                if (deleted) {
+                    console.log(`Successfully deleted poster image from Cloudinary`);
+                } else {
+                    console.warn(`Failed to delete poster image from Cloudinary`);
                 }
+            } catch (error) {
+                console.error(`Error deleting poster image:`, error);
+                deletionResults.push({
+                    image: project.posterImg,
+                    deleted: false,
+                    error: error.message,
+                    type: 'poster'
+                });
             }
         }
 
-        // Delete gallery images
+        // Delete gallery images from Cloudinary
         for (const image of project.images) {
             if (image) {
-                const cleanedPath = cleanImagePath(image);
-                if (!cleanedPath) continue;
-
-                const fullPath = cleanedPath.startsWith('uploads/') ? cleanedPath : `uploads/${cleanedPath}`;
-
                 try {
-                    const deleted = await deleteUploadedFile(fullPath);
+                    const deleted = await deleteCloudinaryImage(image);
                     deletionResults.push({
                         image: image,
-                        path: fullPath,
                         deleted: deleted,
                         type: 'gallery'
                     });
 
                     if (deleted) {
-                        console.log(`Successfully deleted gallery image: ${fullPath}`);
+                        console.log(`Successfully deleted gallery image from Cloudinary`);
                     } else {
-                        console.warn(`Failed to delete gallery image: ${fullPath}`);
+                        console.warn(`Failed to delete gallery image from Cloudinary`);
                     }
                 } catch (error) {
-                    console.error(`Error deleting gallery image ${fullPath}:`, error);
+                    console.error(`Error deleting gallery image:`, error);
                     deletionResults.push({
                         image: image,
-                        path: fullPath,
                         deleted: false,
                         error: error.message,
                         type: 'gallery'
